@@ -3,9 +3,18 @@ from ..core import h2k_parser as h2k
 
 # TODO: Flue diameter not handled
 
+# A supplementary furnace in H2K shares the primary heating system's ductwork. OS-HPXML
+# cannot model two heating systems on a single air distribution system: it raises either
+# a "Multiple heating systems found attached to distribution system" error or, when the
+# supplementary load fraction is 0, an "undefined method `compressor_type'" crash. We
+# therefore model a supplementary furnace as a NON-DUCTED heater serving a fixed share of
+# the heating load. H2K's "Usage" field is unreliable for deriving this split (it is often
+# "Never" even when the unit is used), so a fixed assumption is applied: the primary system
+# serves the remainder (0.7) and the supplementary furnace serves SUPPL_DUCTED_HEAT_FRACTION.
+SUPPL_DUCTED_HEAT_FRACTION = 0.3
+
 
 # Translates data from the supplementary heating systems section
-# All FractionHeatLoadServed elements hardcoded at 0 until we figure out how to determine this
 def get_secondary_heating_systems(h2k_dict, model_data):
     remaining_heating_fraction = 1
     # results = model_data.get_results("SOC")
@@ -44,15 +53,12 @@ def get_secondary_heating_systems(h2k_dict, model_data):
         fraction_floor_area = 0
         if (suppl_heating_usage == "Always") and (suppl_heating_location != "Exterior"):
             # Calculate fraction based on floor area served
-            obj.get_val(system_data, "@rank")
             ag_heated_floor_area = model_data.get_building_detail("ag_heated_floor_area")
             bg_heated_floor_area = model_data.get_building_detail("bg_heated_floor_area")
             fraction_floor_area = round(
                 suppl_heating_area_heated / (ag_heated_floor_area + bg_heated_floor_area),
                 2,
             )
-
-            remaining_heating_fraction = round(remaining_heating_fraction - fraction_floor_area, 2)
 
         system_type = h2k.get_selection_field(system_data, "suppl_heating_equip_type")
         flue_diameter = h2k.get_number_field(system_data, "suppl_heating_flue_diameter")
@@ -76,12 +82,12 @@ def get_secondary_heating_systems(h2k_dict, model_data):
             new_system = get_fireplace(system_data, fraction_floor_area, model_data)
 
         elif system_type == "furnace":
-            new_system = get_furnace(system_data, fraction_floor_area, model_data)
-            # Need this to be included here, so that the distribution system doesn't get missed
-            suppl_heating_distribution_types = [
-                *suppl_heating_distribution_types,
-                "air_regular velocity",
-            ]
+            # Model the supplementary (e.g. wood) furnace as a non-ducted heater so it does
+            # NOT share the primary's air distribution system, which OS-HPXML disallows.
+            # It serves a fixed share of the load (see SUPPL_DUCTED_HEAT_FRACTION); the
+            # primary heating system picks up the remainder.
+            fraction_floor_area = SUPPL_DUCTED_HEAT_FRACTION
+            new_system = get_space_heater(system_data, fraction_floor_area, model_data)
 
         elif system_type == "space heater":
             new_system = get_space_heater(system_data, fraction_floor_area, model_data)
@@ -105,6 +111,10 @@ def get_secondary_heating_systems(h2k_dict, model_data):
                 *suppl_heating_distribution_types,
                 "hydronic_radiator",
             ]
+
+        # Reduce the load available to the primary heating system by the share served by
+        # this supplementary system (0 for systems that serve no load).
+        remaining_heating_fraction = round(remaining_heating_fraction - fraction_floor_area, 2)
 
         secondary_heating_results = [*secondary_heating_results, new_system]
 
@@ -137,42 +147,6 @@ def get_electric_resistance(system_data, system_type, fraction_floor_area, model
     }
 
     return elec_resistance
-
-
-def get_furnace(system_data, fraction_floor_area, model_data):
-    rank = obj.get_val(system_data, "@rank")
-    furnace_capacity = h2k.get_number_field(system_data, "suppl_heating_capacity")
-    furnace_efficiency = h2k.get_number_field(system_data, "suppl_heating_efficiency")
-
-    furnace_pilot_light = h2k.get_number_field(system_data, "suppl_heating_pilot_light")
-
-    furnace_fuel_type = h2k.get_selection_field(system_data, "furnace_fuel_type")
-
-    furnace_dict = {
-        "SystemIdentifier": {"@id": f"SupplHeatingSystem{rank}"},
-        "DistributionSystem": {"@idref": model_data.get_system_id("hvac_air_distribution")},
-        "HeatingSystemType": {"Furnace": None},  # potential to add pilot light info later
-        "HeatingSystemFuel": furnace_fuel_type,
-        "HeatingCapacity": furnace_capacity,
-        "AnnualHeatingEfficiency": {
-            "Units": (
-                "AFUE"  # "Percent" if is_steady_state == "true" else "AFUE"
-            ),  # "AFUE" / "Percent"
-            "Value": furnace_efficiency,
-        },
-        "FractionHeatLoadServed": fraction_floor_area,
-    }
-
-    # Add pilot light if present
-    if furnace_pilot_light > 0:
-        furnace_dict["HeatingSystemType"] = {
-            "Furnace": {
-                "PilotLight": "true",
-                "extension": {"PilotLightBtuh": furnace_pilot_light},
-            }
-        }
-
-    return furnace_dict
 
 
 def get_boiler(system_data, fraction_floor_area, model_data):
