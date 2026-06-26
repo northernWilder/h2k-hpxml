@@ -155,8 +155,30 @@ class ResultsDatabase:
             location = match.group(1) if match else "unknown"
             return f"LocationMismatch_{location.replace(' ', '_')}", "Enclosure"
 
-        # Weather file errors
-        if "Could not find a CWEC2020.zip file" in error_message or "weather" in error_message.lower():
+        # OS-HPXML / Ruby runtime errors raised inside the simulation workflow
+        # (e.g. "undefined method `compressor_type' for #<HPXML::HeatingSystem...>").
+        # These are workflow failures, not translation/validation issues, and must be
+        # checked before the weather rule below since their object dumps often contain
+        # the word "weather".
+        undefined_method = re.search(r"undefined method [`']?(\w+)[`']?", error_message)
+        if undefined_method:
+            method = undefined_method.group(1)
+            if method == "compressor_type":
+                # Heat-pump-only attribute accessed on a HeatingSystem object
+                return "HeatPump_CompressorType", "HVAC"
+            return f"OSHPXML_UndefinedMethod_{method}", "Simulation"
+
+        # Weather file errors -- only match genuine "file not found" signals, NOT any
+        # message that merely mentions the word "weather" (which over-matched before).
+        if (
+            "Could not find a CWEC2020.zip file" in error_message
+            or re.search(
+                r"(?i)(?:weather file|\.epw\b)[^\n]*"
+                r"(?:not found|could not|does not exist|no such file|missing)",
+                error_message,
+            )
+            or re.search(r"(?i)(?:cannot|could not|unable to) find[^\n]*weather", error_message)
+        ):
             return "WeatherFile_NotFound", "Weather"
 
         # Schema validation errors

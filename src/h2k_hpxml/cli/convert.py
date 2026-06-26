@@ -370,7 +370,15 @@ def cli(
             return "Missing floor/slab"
         if "UsedForWholeBuildingVentilation" in error_message:
             return "Ventilation config"
-        if "weather" in error_message.lower():
+        if "undefined method `compressor_type'" in error_message:
+            return "HVAC (compressor_type)"
+        if "undefined method" in error_message:
+            return "OS-HPXML runtime error"
+        # Only flag weather when it is a genuine missing-file signal, not any mention
+        if "Could not find a CWEC2020.zip file" in error_message or (
+            "weather file" in error_message.lower()
+            and any(s in error_message.lower() for s in ("not found", "no such file", "does not exist"))
+        ):
             return "Weather file"
 
         return "Translation error"
