@@ -16,6 +16,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from unidecode import unidecode
+
 from .config.manager import ConfigManager
 from .core.translator import h2ktohpxml as _h2ktohpxml
 from .utils.dependencies import get_openstudio_path
@@ -160,6 +162,18 @@ def _run_hpxml_simulation(
         return "Failure", e.stderr
 
 
+def _safe_output_stem(filepath: str) -> str:
+    """Return an ASCII-safe output folder/file name derived from the input filename.
+
+    OpenStudio/EnergyPlus runs as a subprocess and on Windows fails to open paths
+    containing non-ASCII characters (e.g. a curly apostrophe U+2019 in a filename),
+    causing the simulation to abort with a non-zero exit and no run output. Transliterating
+    the stem to ASCII keeps the simulation path safe while preserving a readable,
+    near-identical folder name (e.g. "3 O’Brien Pl" -> "3 O'Brien Pl").
+    """
+    return unidecode(pathlib.Path(filepath).stem)
+
+
 def _handle_conversion_error(
     filepath: str, dest_hpxml_path: str, error: Exception, traceback_str: str
 ) -> str:
@@ -179,7 +193,8 @@ def _handle_conversion_error(
         str: Error message for reporting
     """
     # Save traceback to a separate error.txt file
-    error_dir = os.path.join(dest_hpxml_path, pathlib.Path(filepath).stem)
+    safe_stem = _safe_output_stem(filepath)
+    error_dir = os.path.join(dest_hpxml_path, safe_stem)
     os.makedirs(error_dir, exist_ok=True)
     error_file_path = os.path.join(error_dir, "error.txt")
     with open(error_file_path, "w") as error_file:
@@ -187,7 +202,7 @@ def _handle_conversion_error(
 
     # Check for specific exception text and handle run.log
     if "returned non-zero exit status 1." in str(error):
-        run_log_path = os.path.join(dest_hpxml_path, pathlib.Path(filepath).stem, "run", "run.log")
+        run_log_path = os.path.join(dest_hpxml_path, safe_stem, "run", "run.log")
         if os.path.exists(run_log_path):
             with open(run_log_path) as run_log_file:
                 run_log_content = "**OS-HPXML ERROR**: " + run_log_file.read()
@@ -247,8 +262,9 @@ def _convert_h2k_file_to_hpxml(filepath: str, dest_hpxml_path: str) -> str:
     # Convert the H2K content to HPXML format
     hpxml_string = _h2ktohpxml(h2k_string)
 
-    # Define the output path for the converted HPXML file
-    file_stem = pathlib.Path(filepath).stem
+    # Define the output path for the converted HPXML file. Use an ASCII-safe stem so the
+    # downstream OpenStudio/EnergyPlus subprocess can open the path on Windows.
+    file_stem = _safe_output_stem(filepath)
     hpxml_path = os.path.join(dest_hpxml_path, file_stem, f"{file_stem}.xml")
 
     # If the destination path exists, delete the folder
