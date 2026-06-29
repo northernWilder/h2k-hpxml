@@ -85,6 +85,12 @@ def get_heat_pump(h2k_dict, model_data):
         # Use default behaviour depending on different heat pump types (until comparison testing between the two engines)
         pass
 
+    # OS-HPXML only permits BackupHeatingSwitchoverTemperature with fossil-fuel backup.
+    # For electric (or other non-fossil) backup, omit it and let OS-HPXML apply its
+    # default lockout behaviour, otherwise the workflow rejects the file.
+    if heat_pump_backup_fuel not in ("natural gas", "fuel oil", "propane"):
+        switchover_type = "balance"
+
     # determine if in heating or heating+cooling configuration
     heating_and_cooling = obj.get_val(type2_data, "Equipment,Function,English") == "Heating/Cooling"
 
@@ -122,8 +128,11 @@ def get_heat_pump(h2k_dict, model_data):
                 **({} if is_auto_sized else {"HeatingCapacity": hp_capacity}),
                 # "HeatingCapacity17F": None, #could be included here if we had the info
                 **({} if is_auto_sized else {"CoolingCapacity": hp_capacity}),
-                "CompressorType": "single stage" if hp_cooling_seer <= 15 else "two stage" if hp_cooling_seer <= 21 else "variable speed",
-                "CoolingSensibleHeatFraction": cooling_sensible_heat_fraction,
+                # OS-HPXML v1.12.0 requires mini-split heat pumps to be variable speed
+                "CompressorType": "variable speed",
+                "CoolingSensibleHeatFraction": (
+                    cooling_sensible_heat_fraction if heating_and_cooling else 0.76
+                ),
                 **(
                     {
                         "BackupType": "separate",
@@ -160,20 +169,19 @@ def get_heat_pump(h2k_dict, model_data):
                     else {}
                 ),
                 "FractionHeatLoadServed": 1,
-                "FractionCoolLoadServed": 1,
+                "FractionCoolLoadServed": 1 if heating_and_cooling else 0,
+                # SEER placeholder (10) keeps the HPXML valid; only used when the HP actually cools
                 "AnnualCoolingEfficiency": {
                     "Units": "SEER",  # only option
-                    "Value": round(hp_cooling_seer, 2),
+                    "Value": round(hp_cooling_seer, 2) if heating_and_cooling else 10,
                 },
                 "AnnualHeatingEfficiency": {
                     "Units": "HSPF",  # only option
                     "Value": round(hp_heating_hspf, 2),
                 },
                 "extension": {
-                    "HeatingCapacityRetention": {
-                        "Fraction": 0.563635566,
-                        "Temperature": 17,
-                    },  # Based on h2k HP curve
+                    # OS-HPXML v1.12.0 renamed HeatingCapacityRetention -> HeatingCapacityFraction17F
+                    "HeatingCapacityFraction17F": 0.563635566,  # Based on h2k HP curve
                     **(
                         {
                             "HeatingAutosizingFactor": 1,
@@ -251,10 +259,8 @@ def get_heat_pump(h2k_dict, model_data):
                     "Value": round(hp_heating_hspf, 2),
                 },
                 "extension": {
-                    "HeatingCapacityRetention": {
-                        "Fraction": 0.563635566,
-                        "Temperature": 17,
-                    },  # Based on h2k HP curve
+                    # OS-HPXML v1.12.0 renamed HeatingCapacityRetention -> HeatingCapacityFraction17F
+                    "HeatingCapacityFraction17F": 0.563635566,  # Based on h2k HP curve
                     **(
                         {
                             "HeatingAutosizingFactor": 1,
